@@ -1,12 +1,226 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Página de Tapacaras</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Face Anon Demo (Blur / Emoji)</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      padding: 12px;
+      font-family: Arial, Helvetica, sans-serif;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background: #f5f5f5;
+    }
+    h1 {
+      font-size: 18px;
+      margin: 0;
+    }
+    .layout {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    #wrap {
+      position: relative;
+      width: 360px;
+      max-width: 100%;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    video, canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    button, select, a.button-link {
+      padding: 6px 10px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      background: #fff;
+      cursor: pointer;
+      font-size: 14px;
+      text-decoration: none;
+      color: #000;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .note {
+      font-size: 12px;
+      color: #666;
+    }
+  </style>
 </head>
 <body>
-    <h1>Bienvenido a mi página de Tapacaras</h1>
-    <p>Esta es una página básica para GitHub Pages.</p>
+  <h1>Face Anon Demo (Cam + Blur / Emoji)</h1>
+  <p class="note">
+    Pulsa <strong>Abrir cámara</strong>, apunta a tu cara y luego dale a <strong>Capturar</strong>.
+    Las caras se procesan en tu navegador (no se envía nada al servidor).
+  </p>
+
+  <div class="layout">
+    <div id="wrap">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div style="min-width:220px;max-width:300px;">
+      <div class="controls">
+        <button id="start">Abrir cámara</button>
+        <button id="capture" disabled>Capturar</button>
+      </div>
+      <div class="controls">
+        <label>Modo:
+          <select id="mode">
+            <option value="blur">Desenfoque</option>
+            <option value="emoji">Emoji 😁</option>
+          </select>
+        </label>
+      </div>
+      <div class="controls">
+        <a id="download" class="button-link" href="javascript:void(0);">Descargar (tras capturar)</a>
+      </div>
+      <p class="note">
+        Requisitos:
+        <br>• Navegador moderno
+        <br>• HTTPS para usar la cámara (GitHub Pages lo da)
+      </p>
+    </div>
+  </div>
+
+  <script type="module">
+    // Cargamos MediaPipe Face Detection + utilidades de cámara desde CDN
+    import { FaceDetection } from 'https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4/face_detection.js';
+    import { Camera } from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.4/camera_utils.js';
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const startBtn = document.getElementById('start');
+    const captureBtn = document.getElementById('capture');
+    const downloadLink = document.getElementById('download');
+    const modeSelect = document.getElementById('mode');
+
+    let camera = null;
+    let lastResults = null; // resultados de la última detección
+
+    const detector = new FaceDetection({
+      locateFile: (file) =>
+        `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4/${file}`,
+    });
+
+    detector.setOptions({
+      model: 'short',             // modelo rápido
+      minDetectionConfidence: 0.6 // umbral detección
+    });
+
+    detector.onResults((results) => {
+      lastResults = results; // guardamos para poder reusar en la captura
+      renderFrame(results);
+    });
+
+    startBtn.addEventListener('click', async () => {
+      if (camera) return;
+
+      try {
+        // Esto ya pide permisos de cámara de forma implícita al empezar
+        camera = new Camera(video, {
+          onFrame: async () => {
+            await detector.send({ image: video });
+          },
+          width: 640,
+          height: 480,
+        });
+        await camera.start();
+        captureBtn.disabled = false;
+      } catch (err) {
+        console.error('Error al acceder a la cámara:', err);
+        alert('No se pudo acceder a la cámara. Revisa permisos y HTTPS.');
+      }
+    });
+
+    function renderFrame(results) {
+      const vw = video.videoWidth || 640;
+      const vh = video.videoHeight || 480;
+      canvas.width = vw;
+      canvas.height = vh;
+
+      // Dibujar frame de vídeo
+      ctx.drawImage(video, 0, 0, vw, vh);
+
+      if (!results || !results.detections) return;
+      const detections = results.detections;
+
+      for (const det of detections) {
+        const box = det.boundingBox;
+        const x = box.xCenter * vw - (box.width * vw) / 2;
+        const y = box.yCenter * vh - (box.height * vh) / 2;
+        const w = box.width * vw;
+        const h = box.height * vh;
+
+        if (modeSelect.value === 'blur') {
+          blurRegion(x, y, w, h, 10);
+        } else {
+          drawEmojiCover(x, y, w, h, '😁');
+        }
+      }
+    }
+
+    function blurRegion(x, y, w, h, strength = 8) {
+      const sx = Math.max(0, Math.floor(x));
+      const sy = Math.max(0, Math.floor(y));
+      const sw = Math.min(canvas.width - sx, Math.floor(w));
+      const sh = Math.min(canvas.height - sy, Math.floor(h));
+      if (sw <= 0 || sh <= 0) return;
+
+      const tmp = document.createElement('canvas');
+      tmp.width = Math.max(1, Math.floor(sw / strength));
+      tmp.height = Math.max(1, Math.floor(sh / strength));
+      const tctx = tmp.getContext('2d');
+
+      // downscale
+      tctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, tmp.width, tmp.height);
+      // upscale (pixelado -> efecto blur)
+      ctx.drawImage(tmp, 0, 0, tmp.width, tmp.height, sx, sy, sw, sh);
+    }
+
+    function drawEmojiCover(x, y, w, h, emoji) {
+      const size = Math.max(w, h) * 1.2;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `${Math.floor(size)}px serif`;
+      ctx.fillText(emoji, x + w / 2, y + h / 2 + h * 0.05);
+      ctx.restore();
+    }
+
+    captureBtn.addEventListener('click', () => {
+      if (!canvas.width || !canvas.height) return;
+
+      // El canvas ya tiene el último frame con caras tapadas
+      const data = canvas.toDataURL('image/png');
+      downloadLink.href = data;
+      downloadLink.download = 'face-anon.png';
+      downloadLink.textContent = 'Descargar imagen';
+    });
+
+    window.addEventListener('beforeunload', () => {
+      if (camera) camera.stop();
+    });
+  </script>
 </body>
 </html>

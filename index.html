@@ -30,7 +30,7 @@
       height: auto;
       display: block;
     }
-    /* Opcional: ocultar el vídeo si solo quieres ver el canvas procesado */
+    /* El vídeo puede estar oculto, usamos el canvas como vista principal */
     video {
       display: none;
     }
@@ -57,7 +57,7 @@
 <body>
   <h1>Demo cámara + blur de caras</h1>
   <p class="note">
-    1) Pulsa <strong>Abrir cámara</strong> · 2) Te debería mostrar el vídeo con la cara desenfocada en tiempo real ·
+    1) Pulsa <strong>Abrir cámara</strong> · 2) Deberías verte en el recuadro con la cara desenfocada ·
     3) Pulsa <strong>Capturar</strong> para descargar la imagen procesada.
   </p>
 
@@ -76,13 +76,14 @@
         <a id="download" class="button-link" href="javascript:void(0);">Descargar (tras capturar)</a>
       </div>
       <p class="note">
-        Todo el procesado (detección + blur) se hace en tu navegador. No se envían imágenes a ningún servidor.
+        Todo se procesa en tu navegador. Si ves el vídeo pero no se desenfoca la cara,
+        es que la parte de MediaPipe no ha cargado y solo estás viendo la cámara.
       </p>
     </div>
   </div>
 
-  <!-- MediaPipe Face Detection (global FaceDetection.*) -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"></script>
+  <!-- MediaPipe Face Detection (legacy JS API, global FaceDetection) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4/face_detection.js"></script>
 
   <script>
     const video = document.getElementById('video');
@@ -93,53 +94,67 @@
     const downloadLink = document.getElementById('download');
 
     let stream = null;
-    let faceDetection = null;
-    let detectRunning = false;
 
-    // Inicializa MediaPipe Face Detection usando el objeto global "FaceDetection"
-    async function initFaceDetection() {
-      if (!window.FaceDetection || !FaceDetection.FaceDetection) {
-        console.error('FaceDetection no está disponible (fallo al cargar script de MediaPipe).');
+    // MediaPipe
+    let faceDetection = null;
+    let lastDetections = null;
+    let detectionTimer = null;
+    let renderStarted = false;
+
+    // Inicializa MediaPipe FaceDetection (si está disponible)
+    function initFaceDetection() {
+      if (faceDetection) return; // ya está
+      if (typeof FaceDetection === 'undefined') {
+        console.warn('MediaPipe FaceDetection no se ha cargado (script/ CDN). Solo se mostrará la cámara.');
         return;
       }
 
-      faceDetection = new FaceDetection.FaceDetection({
+      faceDetection = new FaceDetection({
         locateFile: (file) =>
-          `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`,
+          `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4/${file}`,
       });
 
       faceDetection.setOptions({
-        model: 'short',
-        minDetectionConfidence: 0.6,
+        model: 'short',              // modelo corto alcance
+        minDetectionConfidence: 0.6, // umbral
       });
 
-      faceDetection.onResults(onResults);
+      faceDetection.onResults((results) => {
+        lastDetections = results;
+      });
     }
 
-    // Dibuja el frame + blur en caras
-    function onResults(results) {
+    // Loop de pintado: siempre dibuja el vídeo; si hay detecciones, aplica blur
+    function renderLoop() {
+      if (!video.videoWidth || !video.videoHeight) {
+        requestAnimationFrame(renderLoop);
+        return;
+      }
+
       const vw = video.videoWidth;
       const vh = video.videoHeight;
-      if (!vw || !vh) return;
-
       canvas.width = vw;
       canvas.height = vh;
 
-      // Dibujar frame original
+      // 1) dibujar frame original
       ctx.drawImage(video, 0, 0, vw, vh);
 
-      const detections = (results && results.detections) ? results.detections : [];
-      for (const det of detections) {
-        const box = det.boundingBox;
-        const x = box.xCenter * vw - (box.width * vw) / 2;
-        const y = box.yCenter * vh - (box.height * vh) / 2;
-        const w = box.width * vw;
-        const h = box.height * vh;
-        blurRegion(x, y, w, h, 10);
+      // 2) si hay detecciones, desenfocar regiones
+      if (lastDetections && lastDetections.detections && lastDetections.detections.length) {
+        for (const det of lastDetections.detections) {
+          const box = det.boundingBox;
+          const x = box.xCenter * vw - (box.width * vw) / 2;
+          const y = box.yCenter * vh - (box.height * vh) / 2;
+          const w = box.width * vw;
+          const h = box.height * vh;
+          blurRegion(x, y, w, h, 10);
+        }
       }
+
+      requestAnimationFrame(renderLoop);
     }
 
-    // Blur sencillo por downscale+upscale en región
+    // Blur sencillo por downscale/upscale
     function blurRegion(x, y, w, h, strength = 8) {
       const sx = Math.max(0, Math.floor(x));
       const sy = Math.max(0, Math.floor(y));
@@ -152,31 +167,14 @@
       tmp.height = Math.max(1, Math.floor(sh / strength));
       const tctx = tmp.getContext('2d');
 
-      // downscale
       tctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, tmp.width, tmp.height);
-      // upscale (pixelado -> efecto blur)
       ctx.drawImage(tmp, 0, 0, tmp.width, tmp.height, sx, sy, sw, sh);
     }
 
-    // Bucle de detección continuo
-    async function detectLoop() {
-      if (!detectRunning || !faceDetection) return;
-
-      if (video.readyState >= 2 && video.videoWidth && video.videoHeight) {
-        try {
-          await faceDetection.send({ image: video });
-        } catch (e) {
-          console.error('Error en faceDetection.send:', e);
-        }
-      }
-
-      requestAnimationFrame(detectLoop);
-    }
-
-    // Botón abrir cámara
+    // Botón: abrir cámara
     startBtn.addEventListener('click', async () => {
       try {
-        // 1) Cámara (como en la versión mínima que ya sabes que funciona)
+        // Cámara (esto ya sabes que te funciona en la versión mínima)
         stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'user' },
           audio: false,
@@ -184,14 +182,27 @@
         video.srcObject = stream;
         await video.play();
 
-        // 2) Inicializar face detection (solo la primera vez)
-        if (!faceDetection) {
-          await initFaceDetection();
+        // Arrancar pintado continuo (vídeo -> canvas)
+        if (!renderStarted) {
+          renderStarted = true;
+          requestAnimationFrame(renderLoop);
         }
 
-        // 3) Arrancar bucle de detección
-        detectRunning = true;
-        detectLoop();
+        // Inicializar MediaPipe (si el script está ok)
+        initFaceDetection();
+
+        // Lanzar detección periódica (cada 500ms) si existe faceDetection
+        if (faceDetection && !detectionTimer) {
+          detectionTimer = setInterval(async () => {
+            try {
+              if (video.readyState >= 2) {
+                await faceDetection.send({ image: video });
+              }
+            } catch (e) {
+              console.error('Error en faceDetection.send:', e);
+            }
+          }, 500);
+        }
 
         captureBtn.disabled = false;
       } catch (err) {
@@ -200,7 +211,7 @@
       }
     });
 
-    // Botón capturar → descarga el frame actual del canvas (ya con blur)
+    // Botón: capturar → descargar frame actual del canvas (con blur aplicado si lo hay)
     captureBtn.addEventListener('click', () => {
       if (!canvas.width || !canvas.height) return;
 
@@ -214,7 +225,7 @@
       if (stream) {
         stream.getTracks().forEach(t => t.stop());
       }
-      detectRunning = false;
+      if (detectionTimer) clearInterval(detectionTimer);
     });
   </script>
 </body>
